@@ -12,9 +12,10 @@ import scalaz.\/._
 
 import collection.JavaConversions._
 import scala.concurrent.duration._
+import scala.util.control.NonFatal
 
-/**
- * `Task[A]` wraps a `scalaz.concurrent.Future[Throwable \/ A]`,
+/*
+ * `Task[A]` is a `scalaz.concurrent.Future[Throwable \/ A]`,
  * with some convenience functions for handling exceptions. Its
  * `Monad` and `Nondeterminism` instances are derived from [[Future]].
  *
@@ -446,7 +447,7 @@ object Task {
 
   /** Utility function - evaluate `a` and catch and return any exceptions. */
   def Try[A](a: => A): Throwable \/ A =
-    try \/-(a) catch { case e: Throwable => -\/(e) }
+  try \/-(a) catch { case NonFatal(e) => -\/(e) }
 
   def fromMaybe[A](ma: Maybe[A])(t: => Throwable): Task[A] =
     ma.cata(Task.now, Task.fail(t))
