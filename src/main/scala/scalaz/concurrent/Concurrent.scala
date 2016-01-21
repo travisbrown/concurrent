@@ -1,5 +1,4 @@
-package scalaz
-package concurrent
+package scalaz.concurrent
 
 object Concurrent extends Concurrents
 

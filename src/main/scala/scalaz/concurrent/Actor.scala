@@ -1,6 +1,6 @@
-package scalaz
-package concurrent
+package scalaz.concurrent
 
+import cats.functor.Contravariant
 import java.util.concurrent.atomic.AtomicReference
 
 /**

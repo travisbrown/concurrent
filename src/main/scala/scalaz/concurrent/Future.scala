@@ -1,14 +1,19 @@
 package scalaz.concurrent
 
+import cats.{ Applicative, MonoidK }
+import cats.data.Xor
+import cats.free.Trampoline
+import cats.std.function._
+import cats.syntax.monoidal._
+
 import java.util.concurrent.{Callable, ConcurrentLinkedQueue, ExecutorService, TimeoutException, ScheduledExecutorService, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean, AtomicReference}
 
 import collection.JavaConversions._
-import scalaz.Tags.Parallel
 
-import scalaz._
-import scalaz.Free.Trampoline
-import scalaz.syntax.monad._
+//import scalaz.{ Applicative => _, _ }
+//import scalaz.Free.Trampoline
+//import scalaz.syntax.monad._
 
 import scala.concurrent.SyncVar
 import scala.concurrent.duration._
@@ -198,8 +203,8 @@ sealed abstract class Future[+A] {
    */
   def unsafePerformSyncFor(timeoutInMillis: Long): A = 
     unsafePerformSyncAttemptFor(timeoutInMillis) match {
-      case -\/(e) => throw e
-      case \/-(a) => a
+      case Xor.Left(e) => throw e
+      case Xor.Right(a) => a
     }
 
   def unsafePerformSyncFor(timeout: Duration): A = 
@@ -216,25 +221,25 @@ sealed abstract class Future[+A] {
     
   /** Like `unsafePerformSyncFor`, but returns `TimeoutException` as left value. 
     * Will not report any other exceptions that may be raised during computation of `A`*/
-  def unsafePerformSyncAttemptFor(timeoutInMillis: Long): Throwable \/ A = {
-    val sync = new SyncVar[Throwable \/ A]
+  def unsafePerformSyncAttemptFor(timeoutInMillis: Long): Xor[Throwable, A] = {
+    val sync = new SyncVar[Xor[Throwable, A]]
     val interrupt = new AtomicBoolean(false)
-    unsafePerformAsyncInterruptibly(a => sync.put(\/-(a)), interrupt)
+    unsafePerformAsyncInterruptibly(a => sync.put(Xor.right(a)), interrupt)
     sync.get(timeoutInMillis).getOrElse {
       interrupt.set(true)
-      -\/(new TimeoutException(s"Timed out after $timeoutInMillis milliseconds"))
+      Xor.Left(new TimeoutException(s"Timed out after $timeoutInMillis milliseconds"))
     }
   }
 
-  def unsafePerformSyncAttemptFor(timeout: Duration): Throwable \/ A = 
+  def unsafePerformSyncAttemptFor(timeout: Duration): Xor[Throwable, A] = 
     unsafePerformSyncAttemptFor(timeout.toMillis)
 
   @deprecated("use unsafePerformSyncAttemptFor", "7.2")
-  def attemptRunFor(timeoutInMillis: Long): Throwable \/ A =
+  def attemptRunFor(timeoutInMillis: Long): Xor[Throwable, A] =
     unsafePerformSyncAttemptFor(timeoutInMillis)
 
   @deprecated("use unsafePerformSyncAttemptFor", "7.2")
-  def attemptRunFor(timeout: Duration): Throwable \/ A =
+  def attemptRunFor(timeout: Duration): Xor[Throwable, A] =
     unsafePerformSyncAttemptFor(timeout)
   
   /**
@@ -242,35 +247,35 @@ sealed abstract class Future[+A] {
    * and attempts to cancel the running computation.
    * This implementation will not block the future's execution thread
    */
-  def unsafePerformTimed(timeoutInMillis: Long)(implicit scheduler:ScheduledExecutorService): Future[Throwable \/ A] =  
+  def unsafePerformTimed(timeoutInMillis: Long)(implicit scheduler:ScheduledExecutorService): Future[Xor[Throwable, A]] =  
     //instead of run this though chooseAny, it is run through simple primitive, 
     //as we are never interested in results of timeout callback, and this is more resource savvy
-    async[Throwable \/ A] { cb =>
+    async[Xor[Throwable, A]] { cb =>
       val cancel = new AtomicBoolean(false)
       val done = new AtomicBoolean(false)
       scheduler.schedule(new Runnable {
         def run() { 
           if (done.compareAndSet(false,true)) {
             cancel.set(true)
-            cb(-\/(new TimeoutException(s"Timed out after $timeoutInMillis milliseconds")))
+            cb(Xor.left(new TimeoutException(s"Timed out after $timeoutInMillis milliseconds")))
           } 
         }
       }
       , timeoutInMillis, TimeUnit.MILLISECONDS)
       
-      unsafePerformAsyncInterruptibly(a => if(done.compareAndSet(false,true)) cb(\/-(a)), cancel) 
+      unsafePerformAsyncInterruptibly(a => if(done.compareAndSet(false,true)) cb(Xor.right(a)), cancel) 
     }
 
-  def unsafePerformTimed(timeout: Duration)(implicit scheduler:ScheduledExecutorService = Strategy.DefaultTimeoutScheduler): Future[Throwable \/ A] = 
+  def unsafePerformTimed(timeout: Duration)(implicit scheduler:ScheduledExecutorService = Strategy.DefaultTimeoutScheduler): Future[Xor[Throwable, A]] = 
     unsafePerformTimed(timeout.toMillis)
 
   @deprecated("use unsafePerformTimed", "7.2")
-  def timed(timeoutInMillis: Long)(implicit scheduler:ScheduledExecutorService): Future[Throwable \/ A] =  
+  def timed(timeoutInMillis: Long)(implicit scheduler:ScheduledExecutorService): Future[Xor[Throwable, A]] =  
     unsafePerformTimed(timeoutInMillis)
     
 
   @deprecated("use unsafePerformTimed", "7.2")
-  def timed(timeout: Duration)(implicit scheduler:ScheduledExecutorService = Strategy.DefaultTimeoutScheduler): Future[Throwable \/ A] = 
+  def timed(timeout: Duration)(implicit scheduler:ScheduledExecutorService = Strategy.DefaultTimeoutScheduler): Future[Xor[Throwable, A]] = 
     unsafePerformTimed(timeout)
 
   /**
@@ -295,9 +300,9 @@ object Future {
   // to run the Future; leaving out for now
 
   implicit val futureInstance: Nondeterminism[Future] = new Nondeterminism[Future] {
-    def bind[A,B](fa: Future[A])(f: A => Future[B]): Future[B] =
+    def flatMap[A,B](fa: Future[A])(f: A => Future[B]): Future[B] =
       fa flatMap f
-    def point[A](a: => A): Future[A] = delay(a)
+    def pure[A](a: A): Future[A] = now(a)
 
     def chooseAny[A](h: Future[A], t: Seq[Future[A]]): Future[(A, Seq[Future[A]])] = {
       Async { cb =>
@@ -353,12 +358,12 @@ object Future {
 
     // implementation runs all threads, dumping to a shared queue
     // last thread to finish invokes the callback with the results
-    override def reduceUnordered[A, M](fs: Seq[Future[A]])(implicit R: Reducer[A, M]): Future[M] =
+    override def reduceUnordered[A, M[_]](fs: Seq[Future[A]])(implicit R: MonoidK[M], M: Applicative[M]): Future[M[A]] =
       fs match {
-      case Seq() => Future.now(R.zero)
-      case Seq(f) => f.map(R.unit)
+      case Seq() => Future.now(R.empty)
+      case Seq(f) => f.map(M.pure)
       case other => Async { cb =>
-        val results = new ConcurrentLinkedQueue[M]
+        val results = new ConcurrentLinkedQueue[M[A]]
         val c = new AtomicInteger(fs.size)
 
         fs.foreach { f =>
@@ -366,13 +371,13 @@ object Future {
             // Try to reduce number of values in the queue
             val front = results.poll()
             if (front == null)
-              results.add(R.unit(a))
+              results.add(M.pure(a))
             else
-              results.add(R.cons(a, front))
+              results.add(R.combine(M.pure(a), front))
 
             // only last completed f will hit the 0 here.
             if (c.decrementAndGet() == 0)
-              cb(results.toList.foldLeft(R.zero)((a, b) => R.append(a, b)))
+              cb(results.toList.foldLeft(R.empty[A])((a, b) => R.combine(a, b)))
             else Trampoline.done(())
           }
         }
@@ -381,7 +386,7 @@ object Future {
   }
 
   /** type for Futures which need to be executed in parallel when using an Applicative instance */
-  type ParallelFuture[A] = Future[A] @@ Parallel
+  type ParallelFuture[A] = Parallel[Future, A]
 
   /**
    * This Applicative instance runs Futures in parallel.
@@ -409,7 +414,7 @@ object Future {
    * by the returned `Future`--nothing occurs until the `Future` is run.
    */
   def fork[A](a: => Future[A])(implicit pool: ExecutorService = Strategy.DefaultExecutorService): Future[A] =
-    Future(a).join
+    futureInstance.flatten(Future(a))
 
   /**
    * Produce `f` in the main trampolining loop, `Future.step`, using a fresh
@@ -448,6 +453,6 @@ object Future {
   def gatherUnordered[A](fs: Seq[Future[A]]): Future[List[A]] =
     futureInstance.gatherUnordered(fs)
 
-  def reduceUnordered[A, M](fs: Seq[Future[A]])(implicit R: Reducer[A, M]): Future[M] =
+  def reduceUnordered[A, M[_]](fs: Seq[Future[A]])(implicit R: MonoidK[M], M: Applicative[M]): Future[M[A]] =
     futureInstance.reduceUnordered(fs)
 }

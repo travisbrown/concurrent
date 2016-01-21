@@ -1,12 +1,12 @@
-package scalaz
-package concurrent
+package scalaz.concurrent
+
+import cats.data.Xor
 
 import scala.annotation.tailrec
 import scala.collection.immutable.SortedMap
 
 import java.util.concurrent.locks.ReentrantReadWriteLock
 
-import scalaz.syntax.either._
 
 trait Timeout
 object Timeout extends Timeout
@@ -98,14 +98,14 @@ case class Timer(timeoutTickMs: Int = 100, workerName: String = "TimeoutContextW
     }
   }
 
-  def withTimeout[T](future: Future[T], timeout: Long): Future[Timeout \/ T] = {
+  def withTimeout[T](future: Future[T], timeout: Long): Future[Xor[Timeout, T]] = {
     val timeoutFuture = valueWait(Timeout, timeout)
-    futureNondeterminism.choose(timeoutFuture, future).map(_.fold(_._1.left, _._2.right))
+    futureNondeterminism.choose(timeoutFuture, future).map(_.fold(l => Xor.left(l._1), r => Xor.right(r._2)))
   }
 
-  def withTimeout[T](task: Task[T], timeout: Long): Task[Timeout \/ T] = {
-    val timeoutTask = new Task(valueWait(Timeout, timeout).map(_.right[Throwable]))
-    taskNondeterminism.choose(timeoutTask, task).map(_.fold(_._1.left, _._2.right))
+  def withTimeout[T](task: Task[T], timeout: Long): Task[Xor[Timeout, T]] = {
+    val timeoutTask = new Task(valueWait(Timeout, timeout).map(Xor.right))
+    taskNondeterminism.choose(timeoutTask, task).map(_.fold(l => Xor.left(l._1), r => Xor.right(r._2)))
   }
 }
 

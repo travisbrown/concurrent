@@ -1,14 +1,17 @@
 package scalaz.concurrent
 
+import cats.{ Applicative, MonadError, MonoidK, Traverse }
+import cats.data.Xor
+import cats.free.Trampoline
+import cats.std.list._
+import cats.syntax.monoidal._
+
 import java.util.concurrent.{ScheduledExecutorService, ConcurrentLinkedQueue, ExecutorService}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
-import scalaz._
-import scalaz.Tags.Parallel
-import scalaz.syntax.monad._
-import scalaz.std.list._
-import scalaz.Free.Trampoline
-import scalaz.\/._
+//import scalaz.{ Nondeterminism => _, _ }
+//import scalaz.std.list._
+//import scalaz.Free.Trampoline
 
 import collection.JavaConversions._
 import scala.concurrent.duration._
@@ -28,14 +31,14 @@ import scala.util.control.NonFatal
  * are responsible for ensuring the exception safety of the provided
  * `Future`.
  */
-class Task[+A](val get: Future[Throwable \/ A]) {
+class Task[+A](val get: Future[Xor[Throwable, A]]) {
 
   def flatMap[B](f: A => Task[B]): Task[B] =
     new Task(get flatMap {
-      case -\/(e) => Future.now(-\/(e))
-      case \/-(a) => Task.Try(f(a)) match {
-        case e @ -\/(_) => Future.now(e)
-        case \/-(task) => task.get
+      case Xor.Left(e) => Future.now(Xor.left(e))
+      case Xor.Right(a) => Task.Try(f(a)) match {
+        case e @ Xor.Left(_) => Future.now(e)
+        case Xor.Right(task) => task.get
       }
     })
 
@@ -43,10 +46,10 @@ class Task[+A](val get: Future[Throwable \/ A]) {
     new Task(get map { _ flatMap {a => Task.Try(f(a))} })
 
   /** 'Catches' exceptions in the given task and returns them as values. */
-  def attempt: Task[Throwable \/ A] =
+  def attempt: Task[Xor[Throwable, A]] =
     new Task(get map {
-      case -\/(e) => \/-(-\/(e))
-      case \/-(a) => \/-(\/-(a))
+      case Xor.Left(e) => Xor.right(Xor.left(e))
+      case Xor.Right(a) => Xor.right(Xor.right(a))
     })
 
   /**
@@ -56,7 +59,7 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    */
   def onFinish(f: Option[Throwable] => Task[Unit]): Task[A] =
     new Task(get flatMap {
-      case -\/(e) => f(Some(e)).get *> Future.now(-\/(e))
+      case Xor.Left(e) => f(Some(e)).get *> Future.now(Xor.left(e))
       case r => f(None).get *> Future.now(r)
     })
 
@@ -74,8 +77,8 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    */
   def handleWith[B>:A](f: PartialFunction[Throwable,Task[B]]): Task[B] =
     attempt flatMap {
-      case -\/(e) => f.lift(e) getOrElse Task.fail(e)
-      case \/-(a) => Task.now(a)
+      case Xor.Left(e) => f.lift(e) getOrElse Task.fail(e)
+      case Xor.Right(a) => Task.now(a)
     }
 
   /**
@@ -85,7 +88,7 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    */
   def or[B>:A](t2: Task[B]): Task[B] =
     new Task(this.get flatMap {
-      case -\/(e) => t2.get
+      case Xor.Left(e) => t2.get
       case a => Future.now(a)
     })
 
@@ -96,8 +99,8 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    */
   def unsafePerformSync: A = 
     get.unsafePerformSync match {
-      case -\/(e) => throw e
-      case \/-(a) => a
+      case Xor.Left(e) => throw e
+      case Xor.Right(a) => a
     }
 
   @deprecated("use unsafePerformSync", "7.2")
@@ -105,11 +108,11 @@ class Task[+A](val get: Future[Throwable \/ A]) {
     unsafePerformSync
   
   /** Like `run`, but returns exceptions as values. */
-  def unsafePerformSyncAttempt: Throwable \/ A =
-    try get.unsafePerformSync catch { case t: Throwable => -\/(t) }
+  def unsafePerformSyncAttempt: Xor[Throwable, A] =
+    try get.unsafePerformSync catch { case t: Throwable => Xor.left(t) }
 
   @deprecated("use unsafePerformSyncAttempt", "7.2")
-  def attemptRun: Throwable \/ A =
+  def attemptRun: Xor[Throwable, A] =
     unsafePerformSyncAttempt
   
   /**
@@ -118,11 +121,11 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    * while stepping through the trampoline, this should provide a fairly
    * robust means of cancellation.
    */
-  def unsafePerformAsyncInterruptibly(f: (Throwable \/ A) => Unit, cancel: AtomicBoolean): Unit =
+  def unsafePerformAsyncInterruptibly(f: Xor[Throwable, A] => Unit, cancel: AtomicBoolean): Unit =
     get.unsafePerformAsyncInterruptibly(f, cancel)
 
   @deprecated("use unsafePerformAsyncInterruptibly", "7.2")
-  def runAsyncInterruptibly(f: (Throwable \/ A) => Unit, cancel: AtomicBoolean): Unit =
+  def runAsyncInterruptibly(f: Xor[Throwable, A] => Unit, cancel: AtomicBoolean): Unit =
     unsafePerformAsyncInterruptibly(f, cancel)
     
   /**
@@ -139,15 +142,15 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    * @param f
    * @return
    */
-  def unsafePerformAsyncInterruptibly(f: (Throwable \/ A) => Unit) : () => Unit = {
+  def unsafePerformAsyncInterruptibly(f: Xor[Throwable, A] => Unit) : () => Unit = {
     val completed : AtomicBoolean = new AtomicBoolean(false)
-    val a = Actor[Option[Throwable \/ A]] ({
+    val a = Actor[Option[Xor[Throwable, A]]] ({
       case Some(r) if ! completed.get =>
         completed.set(true)
         f(r)
       case None if ! completed.get  =>
         completed.set(true)
-        f(left(Task.TaskInterrupted))
+        f(Xor.left(Task.TaskInterrupted))
       case _ => () //already completed
     })(Strategy.Sequential)
 
@@ -156,7 +159,7 @@ class Task[+A](val get: Future[Throwable \/ A]) {
   }
 
   @deprecated("use unsafePerformAsyncInterruptibly", "7.2")
-  def runAsyncInterruptibly(f: (Throwable \/ A) => Unit) : () => Unit = 
+  def runAsyncInterruptibly(f: Xor[Throwable, A] => Unit) : () => Unit = 
     unsafePerformAsyncInterruptibly(f)
   
   /**
@@ -166,11 +169,11 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    * `Async` encountered, control to whatever thread backs the `Async` and
    * this function returns immediately.
    */
-  def unsafePerformAsync(f: (Throwable \/ A) => Unit): Unit =
+  def unsafePerformAsync(f: Xor[Throwable, A] => Unit): Unit =
     get.unsafePerformAsync(f)
 
   @deprecated("use unsafePerformAsync", "7.2")
-  def runAsync(f: (Throwable \/ A) => Unit): Unit =
+  def runAsync(f: Xor[Throwable, A] => Unit): Unit =
     unsafePerformAsync(f)
     
   /**
@@ -180,8 +183,8 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    */
   def unsafePerformSyncFor(timeoutInMillis: Long): A = 
     get.unsafePerformSyncFor(timeoutInMillis) match {
-      case -\/(e) => throw e
-      case \/-(a) => a
+      case Xor.Left(e) => throw e
+      case Xor.Right(a) => a
     }
 
   def unsafePerformSyncFor(timeout: Duration): A = 
@@ -199,18 +202,18 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    * Like `unsafePerformSyncFor`, but returns exceptions as values. Both `TimeoutException`
    * and other exceptions will be folded into the same `Throwable`.
    */
-  def unsafePerformSyncAttemptFor(timeoutInMillis: Long): Throwable \/ A =
-    get.unsafePerformSyncAttemptFor(timeoutInMillis).join
+  def unsafePerformSyncAttemptFor(timeoutInMillis: Long): Xor[Throwable, A] =
+    Xor.xorInstances.flatten(get.unsafePerformSyncAttemptFor(timeoutInMillis))
 
   @deprecated("use unsafePerformSyncAttemptFor", "7.2")
-  def attemptRunFor(timeoutInMillis: Long): Throwable \/ A = 
+  def attemptRunFor(timeoutInMillis: Long): Xor[Throwable, A] = 
     unsafePerformSyncAttemptFor(timeoutInMillis)
 
-  def unsafePerformSyncAttemptFor(timeout: Duration): Throwable \/ A = 
+  def unsafePerformSyncAttemptFor(timeout: Duration): Xor[Throwable, A] = 
     unsafePerformSyncAttemptFor(timeout.toMillis)
 
   @deprecated("use unsafePerformSyncAttemptFor", "7.2")
-  def attemptRunFor(timeout: Duration): Throwable \/ A = 
+  def attemptRunFor(timeout: Duration): Xor[Throwable, A] = 
     unsafePerformSyncAttemptFor(timeout)
 
   /**
@@ -218,7 +221,7 @@ class Task[+A](val get: Future[Throwable \/ A]) {
    * and attempts to cancel the running computation.
    */
   def unsafePerformTimed(timeoutInMillis: Long)(implicit scheduler:ScheduledExecutorService): Task[A] =
-    new Task(get.unsafePerformTimed(timeoutInMillis).map(_.join))
+    new Task(get.unsafePerformTimed(timeoutInMillis).map(Xor.xorInstances.flatten))
 
   def unsafePerformTimed(timeout: Duration)(implicit scheduler:ScheduledExecutorService = Strategy.DefaultTimeoutScheduler): Task[A] = 
     unsafePerformTimed(timeout.toMillis)
@@ -259,12 +262,12 @@ class Task[+A](val get: Future[Throwable \/ A]) {
   private def unsafeRetryInternal(delays: Seq[Duration],
                             p: (Throwable => Boolean),
                             accumulateErrors: Boolean): Task[(A, List[Throwable])] = {
-      def help(ds: Seq[Duration], es: => Stream[Throwable]): Future[Throwable \/ (A, List[Throwable])] = {
+      def help(ds: Seq[Duration], es: => Stream[Throwable]): Future[Xor[Throwable, (A, List[Throwable])]] = {
         def acc = if (accumulateErrors) es.toList else Nil
           ds match {
             case Seq() => get map (_. map(_ -> acc))
             case Seq(t, ts @_*) => get flatMap {
-              case -\/(e) if p(e) =>
+              case Xor.Left(e) if p(e) =>
                 help(ts, e #:: es) after t
               case x => Future.now(x.map(_ -> acc))
             }
@@ -286,11 +289,11 @@ class Task[+A](val get: Future[Throwable \/ A]) {
 
 object Task {
 
-  implicit val taskInstance: Nondeterminism[Task] with BindRec[Task] with Catchable[Task] with MonadError[Task,Throwable] =
-    new Nondeterminism[Task] with BindRec[Task] with Catchable[Task] with MonadError[Task, Throwable] {
+  implicit val taskInstance: Nondeterminism[Task] with MonadError[Task,Throwable] =
+    new Nondeterminism[Task] with MonadError[Task, Throwable] {
       val F = Nondeterminism[Future]
-      def point[A](a: => A) = Task.point(a)
-      def bind[A,B](a: Task[A])(f: A => Task[B]): Task[B] =
+      def pure[A](a: A) = Task.pure(a)
+      def flatMap[A,B](a: Task[A])(f: A => Task[B]): Task[B] =
         a flatMap f
       def chooseAny[A](h: Task[A], t: Seq[Task[A]]): Task[(A, Seq[Task[A]])] =
         new Task ( F.map(F.chooseAny(h.get, t map (_ get))) { case (a, residuals) =>
@@ -301,11 +304,11 @@ object Task {
           Traverse[List].sequenceU(eithers)
         ))
       }
-      def fail[A](e: Throwable): Task[A] = new Task(Future.now(-\/(e)))
-      def attempt[A](a: Task[A]): Task[Throwable \/ A] = a.attempt
-      def tailrecM[A, B](f: A => Task[A \/ B])(a: A): Task[B] = Task.tailrecM(f)(a)
+      def fail[A](e: Throwable): Task[A] = new Task(Future.now(Xor.left(e)))
+      override def attempt[A](a: Task[A]): Task[Xor[Throwable, A]] = a.attempt
+      def tailrecM[A, B](f: A => Task[Xor[A, B]])(a: A): Task[B] = Task.tailrecM(f)(a)
       def raiseError[A](e: Throwable): Task[A] = fail(e)
-      def handleError[A](fa: Task[A])(f: Throwable => Task[A]): Task[A] =
+      def handleErrorWith[A](fa: Task[A])(f: Throwable => Task[A]): Task[A] =
         fa.handleWith { case t => f(t) }
     }
 
@@ -314,13 +317,13 @@ object Task {
     override def fillInStackTrace = this
   }
 
-  def point[A](a: => A) = new Task(Future.delay(Try(a)))
+  def pure[A](a: A) = new Task(Future.delay(Try(a)))
 
   /** A `Task` which fails with the given `Throwable`. */
-  def fail(e: Throwable): Task[Nothing] = new Task(Future.now(-\/(e)))
+  def fail(e: Throwable): Task[Nothing] = new Task(Future.now(Xor.left(e)))
 
   /** Convert a strict value to a `Task`. Also see `delay`. */
-  def now[A](a: A): Task[A] = new Task(Future.now(\/-(a)))
+  def now[A](a: A): Task[A] = new Task(Future.now(Xor.right(a)))
 
   /**
    * Promote a non-strict value to a `Task`, catching exceptions in
@@ -338,8 +341,8 @@ object Task {
    */
   def suspend[A](a: => Task[A]): Task[A] = new Task(Future.suspend(
     Try(a.get) match {
-      case -\/(e) => Future.now(-\/(e))
-      case \/-(f) => f
+      case Xor.Left(e) => Future.now(Xor.left(e))
+      case Xor.Right(f) => f
   }))
 
   /** Create a `Task` that will evaluate `a` using the given `ExecutorService`. */
@@ -362,7 +365,7 @@ object Task {
    * by the returned `Task`--nothing occurs until the `Task` is run.
    */
   def fork[A](a: => Task[A])(implicit pool: ExecutorService = Strategy.DefaultExecutorService): Task[A] =
-    apply(a).join
+    Task.taskInstance.flatten(apply(a))
 
 
   /**
@@ -371,7 +374,7 @@ object Task {
    * to translate from a callback-based API to a straightforward monadic
    * version.
    */
-  def async[A](register: ((Throwable \/ A) => Unit) => Unit): Task[A] =
+  def async[A](register: (Xor[Throwable, A] => Unit) => Unit): Task[A] =
     new Task(Future.async(register))
 
   def schedule[A](a: => A, delay: Duration)(implicit pool: ScheduledExecutorService =
@@ -386,39 +389,39 @@ object Task {
    */
   def gatherUnordered[A](tasks: Seq[Task[A]], exceptionCancels: Boolean = false): Task[List[A]] =
     if (!exceptionCancels)
-      Nondeterminism[Task].gatherUnordered(tasks)
+      Nondeterminism[Task].gatherUnordered[A](tasks)
     else
-      reduceUnordered[A, List[A]](tasks, exceptionCancels)
+      reduceUnordered[A, List](tasks, exceptionCancels)
 
-  def reduceUnordered[A, M](tasks: Seq[Task[A]], exceptionCancels: Boolean = false)(implicit R: Reducer[A, M]): Task[M] =
-    if (!exceptionCancels) taskInstance.reduceUnordered(tasks)
+  def reduceUnordered[A, M[_]](tasks: Seq[Task[A]], exceptionCancels: Boolean = false)(implicit R: MonoidK[M], M: Applicative[M]): Task[M[A]] =
+    if (!exceptionCancels) taskInstance.reduceUnordered[A, M](tasks)
     else tasks match {
       // Unfortunately we cannot reuse the future's combinator
       // due to early terminating requirement on task
       // when task fails.  This also makes implementation a bit trickier
-      case Seq() => Task.now(R.zero)
-      case Seq(t) => t.map(R.unit)
+      case Seq() => Task.now(R.empty)
+      case Seq(t) => t.map(M.pure)
       case _ => new Task(Future.Async { cb =>
         val interrupt = new AtomicBoolean(false)
-        val results = new ConcurrentLinkedQueue[M]
+        val results = new ConcurrentLinkedQueue[M[A]]
         val togo = new AtomicInteger(tasks.size)
 
         tasks.foreach { t =>
-          val handle: (Throwable \/ A) => Trampoline[Unit] = {
-            case \/-(success) =>
+          val handle: Xor[Throwable, A] => Trampoline[Unit] = {
+            case Xor.Right(success) =>
               // Try to reduce number of values in the queue
               val front = results.poll()
               if (front == null)
-                results.add(R.unit(success))
+                results.add(M.pure(success))
               else
-                results.add(R.cons(success, front))
+                results.add(R.combine(M.pure(success), front))
 
               // only last completed f will hit the 0 here.
               if (togo.decrementAndGet() == 0)
-                cb(\/-(results.toList.foldLeft(R.zero)((a, b) => R.append(a, b))))
+                cb(Xor.right(results.toList.foldLeft(R.empty[A])((a, b) => R.combine(a, b))))
               else
                 Trampoline.done(())
-            case e@(-\/(failure)) =>
+            case e@(Xor.Left(failure)) =>
               // Only allow the first failure to invoke the callback, so we
               // race to set `togo` to 0 here.
               // If we win, invoke the callback with our error, otherwise, noop
@@ -446,29 +449,28 @@ object Task {
     }
 
   /** Utility function - evaluate `a` and catch and return any exceptions. */
-  def Try[A](a: => A): Throwable \/ A =
-  try \/-(a) catch { case NonFatal(e) => -\/(e) }
+  def Try[A](a: => A): Xor[Throwable, A] =
+  try Xor.right(a) catch { case NonFatal(e) => Xor.left(e) }
 
-  def fromMaybe[A](ma: Maybe[A])(t: => Throwable): Task[A] =
-    ma.cata(Task.now, Task.fail(t))
+  def fromOption[A](ma: Option[A])(t: => Throwable): Task[A] =
+    ma.fold[Task[A]](Task.fail(t))(Task.now)
 
-  def fromDisjunction[A <: Throwable, B](x: A \/ B): Task[B] =
+  def fromDisjunction[A <: Throwable, B](x: Xor[A, B]): Task[B] =
     x.fold(Task.fail, Task.now)
 
-  def tailrecM[A, B](f: A => Task[A \/ B])(a: A): Task[B] =
+  def tailrecM[A, B](f: A => Task[Xor[A, B]])(a: A): Task[B] =
     f(a).flatMap {
-      case -\/(a0) => tailrecM(f)(a0)
-      case \/-(b) => point(b)
+      case Xor.Left(a0) => tailrecM(f)(a0)
+      case Xor.Right(b) => pure(b)
     }
 
   /** type for Tasks which need to be executed in parallel when using an Applicative instance */
-  type ParallelTask[A] = Task[A] @@ Parallel
+  type ParallelTask[A] = Parallel[Task, A]
 
   /** This Applicative instance runs Tasks in parallel.
    *
    * It is different from the Applicative instance obtained from Monad[Task] which runs tasks sequentially.
    */
-  implicit val taskParallelApplicativeInstance: Applicative[ParallelTask] =
-    taskInstance.parallel
+  implicit val taskParallelApplicativeInstance: Applicative[ParallelTask] = taskInstance.parallel
 }
 

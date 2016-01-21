@@ -1,5 +1,4 @@
-package scalaz
-package concurrent
+package scalaz.concurrent
 
 import java.util.concurrent.{ScheduledExecutorService, ExecutorService, ThreadFactory, Executors}
 
