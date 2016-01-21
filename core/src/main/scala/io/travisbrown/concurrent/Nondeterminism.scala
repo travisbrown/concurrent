@@ -1,9 +1,34 @@
-package scalaz.concurrent
+package io.travisbrown.concurrent
 
-import cats.{ Applicative, Foldable, MonoidK, Monad, Monoid, Semigroup }
+import cats.{ Applicative, Foldable, Functor, MonoidK, Monad, Monoid, Semigroup }
 import cats.data.{ NonEmptyList, OneAnd, Xor }
 import cats.std.list._
 import cats.syntax.foldable._
+import scala.collection.JavaConverters._
+
+//final class Indexed[A](val a: A, val i: Int)
+
+final object Indexed2 {
+  def apply[F[_], A](fs: Seq[F[A]])(implicit F: Functor[F]): IndexedSeq[F[Indexed[A]]] = {
+    var i = 0
+
+    fs.map { fa =>
+      val j = i
+      i += 1
+      F.map(fa)(a => new Indexed(a, j))
+    }(collection.breakOut)
+  }
+
+  def make[A](fs: Seq[A]): IndexedSeq[Indexed[A]] = {
+    var i = 0
+
+    fs.map { fa =>
+      val j = i
+      i += 1
+      new Indexed(fa, j)
+    }(collection.breakOut)
+  }
+}
 
 ////
 /**
@@ -32,7 +57,7 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
    * The default implementation calls `chooseAny` with a
    * two-element list and uses the `Functor` for `F` to fix up types.
    */
-  def choose[A,B](a: F[A], b: F[B]): F[Xor[(A, F[B]), (F[A], B)]] =
+  def choose[A, B](a: F[A], b: F[B]): F[Xor[(A, F[B]), (F[A], B)]] =
     map(chooseAny(List[F[Xor[A, B]]](map(a)(Xor.left), map(b)(Xor.right))).get) {
       (x: (Xor[A, B], Seq[F[Xor[A, B]]])) => x match {
         case (Xor.Left(a), Seq(br)) =>
@@ -57,11 +82,11 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
    *
    * @return `None`, if the input is empty.
    */
-  def chooseAny[A](a: Seq[F[A]]): Option[F[(A, Seq[F[A]])]] =
-    if (a.isEmpty) None
-    else Some(chooseAny(a.head, a.tail))
+  def chooseAny[A](a: Seq[F[A]]): Option[F[(A, Seq[F[A]])]] = if (a.isEmpty) None else Some(chooseAny(a.head, a.tail))
 
   def chooseAny[A](head: F[A], tail: Seq[F[A]]): F[(A, Seq[F[A]])]
+
+  def chooseAnyIndexed[A](fs: IndexedSeq[Indexed[F[A]]]): F[(Indexed[A], IndexedSeq[Indexed[F[A]]])]
 
   // derived functions
 
@@ -69,49 +94,48 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
    * Apply a function to the results of `a` and `b`, nondeterminstically
    * ordering their effects.
    */
-  def mapBoth[A,B,C](a: F[A], b: F[B])(f: (A,B) => C): F[C] =
-    flatMap(choose(a, b)) {
-      case Xor.Left((a,rb)) => map(rb)(b => f(a,b))
-      case Xor.Right((ra,b)) => map(ra)(a => f(a,b))
-    }
-
+  def mapBoth[A, B, C](a: F[A], b: F[B])(f: (A, B) => C): F[C] = flatMap(choose(a, b)) {
+    case Xor.Left((a, rb)) => map(rb)(b => f(a,b))
+    case Xor.Right((ra, b)) => map(ra)(a => f(a,b))
+  }
 
   /**
    * Apply a function to 2 results, nondeterminstically ordering their effects, alias of mapBoth
    */
-  def nmap2[A,B,C](a: F[A], b: F[B])(f: (A,B) => C): F[C] =
-    mapBoth(a,b)(f)
+  def nmap2[A,B,C](a: F[A], b: F[B])(f: (A,B) => C): F[C] = mapBoth(a,b)(f)
 
   /**
-   * Apply a function to 3 results, nondeterminstically ordering their effects 
+   * Apply a function to 3 results, nondeterminstically ordering their effects
    */
-  def nmap3[A,B,C,R](a: F[A], b: F[B], c: F[C])(f: (A,B,C) => R): F[R] =
-    nmap2(nmap2(a, b)((_,_)), c)((ab,c) => f(ab._1, ab._2, c))
+  def nmap3[A,B,C,R](a: F[A], b: F[B], c: F[C])(f: (A, B, C) => R): F[R] =
+    nmap2(nmap2(a, b)((_, _)), c)((ab, c) => f(ab._1, ab._2, c))
 
   /**
-   * Apply a function to 4 results, nondeterminstically ordering their effects 
+   * Apply a function to 4 results, nondeterminstically ordering their effects
    */
-  def nmap4[A,B,C,D,R](a: F[A], b: F[B], c: F[C], d: F[D])(f: (A,B,C,D) => R): F[R] =
-    nmap2(nmap2(a, b)((_,_)), nmap2(c,d)((_,_)))((ab,cd) => f(ab._1, ab._2, cd._1, cd._2))
+  def nmap4[A,B,C,D,R](a: F[A], b: F[B], c: F[C], d: F[D])(f: (A, B, C, D) => R): F[R] =
+    nmap2(nmap2(a, b)((_, _)), nmap2(c, d)((_, _)))((ab, cd) => f(ab._1, ab._2, cd._1, cd._2))
 
   /**
-   * Apply a function to 5 results, nondeterminstically ordering their effects 
+   * Apply a function to 5 results, nondeterminstically ordering their effects
    */
-  def nmap5[A,B,C,D,E,R](a: F[A], b: F[B], c: F[C], d: F[D], e: F[E])(f: (A,B,C,D,E) => R): F[R] =
+  def nmap5[A,B,C,D,E,R](a: F[A], b: F[B], c: F[C], d: F[D], e: F[E])(f: (A, B, C, D, E) => R): F[R] =
     nmap2(nmap2(a, b)((_,_)), nmap3(c,d,e)((_,_,_)))((ab,cde) => f(ab._1, ab._2, cde._1, cde._2, cde._3))
 
   /**
-   * Apply a function to 6 results, nondeterminstically ordering their effects 
+   * Apply a function to 6 results, nondeterminstically ordering their effects
    */
-  def nmap6[A,B,C,D,E,FF,R](a: F[A], b: F[B], c: F[C], d: F[D], e: F[E], ff:F[FF])(f: (A,B,C,D,E,FF) => R): F[R] =
-    nmap2(nmap3(a, b, c)((_,_,_)), nmap3(d,e,ff)((_,_,_)))((abc,deff) => f(abc._1, abc._2, abc._3, deff._1, deff._2, deff._3))
-
+  def nmap6[A,B,C,D,E,FF,R](a: F[A], b: F[B], c: F[C], d: F[D], e: F[E], ff: F[FF])(f: (A, B, C, D, E, FF) => R): F[R] =
+    nmap2(
+      nmap3(a, b, c)((_, _, _)),
+      nmap3(d, e, ff)((_, _, _)))((abc, deff) => f(abc._1, abc._2, abc._3, deff._1, deff._2, deff._3)
+    )
 
   /**
    * Obtain results from both `a` and `b`, nondeterministically ordering
    * their effects.
    */
-  def both[A,B](a: F[A], b: F[B]): F[(A,B)] = mapBoth(a,b)((_,_))
+  def both[A, B](a: F[A], b: F[B]): F[(A, B)] = mapBoth(a, b)((_, _))
 
   /**
    * Nondeterministically gather results from the given sequence of actions
@@ -120,8 +144,9 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
    * To preserve the order of the output list while allowing nondetermininstic
    * ordering of effects, use `gather`.
    */
-  def gatherUnordered[A](fs: Seq[F[A]]): F[List[A]] =
-    reduceUnordered[A, List](fs)
+  def gatherUnordered[A](fs: Seq[F[A]]): F[List[A]] = reduceUnordered(fs)
+
+  def gatherUnorderedIndexed[A](fs: IndexedSeq[Indexed[F[A]]]): F[List[Indexed[A]]] = reduceUnorderedIndexed(fs)
 
   def gatherUnordered1[A](fs: NonEmptyList[F[A]]): F[NonEmptyList[A]] = {
     flatMap(chooseAny(fs.head, fs.tail)) { case (a, residuals) =>
@@ -134,10 +159,14 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
    * The result will be arbitrarily reordered, depending on the order
    * results come back in a sequence of calls to `chooseAny`.
    */
-  def reduceUnordered[A, M[_]](fs: Seq[F[A]])(implicit R: MonoidK[M], M: Applicative[M]): F[M[A]] =
-    if (fs.isEmpty) pure(R.empty)
-    else flatMap(chooseAny(fs.head, fs.tail)) { case (a, residuals) =>
-      map(reduceUnordered[A, M](residuals))(R.combine(M.pure(a), _))
+  def reduceUnordered[A](fs: Seq[F[A]]): F[List[A]] =
+    if (fs.isEmpty) pure(Nil) else flatMap(chooseAny(fs.head, fs.tail)) {
+      case (a, residuals) => map(reduceUnordered(residuals))(a :: _)
+    }
+
+  def reduceUnorderedIndexed[A](fs: IndexedSeq[Indexed[F[A]]]): F[List[Indexed[A]]] =
+    if (fs.isEmpty) pure(Nil) else flatMap(chooseAnyIndexed(fs)) {
+      case (a, residuals) => map(reduceUnorderedIndexed(residuals))(a :: _)
     }
 
   /**
@@ -151,13 +180,24 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
    * Although the effects are unordered, we ensure the order of results
    * matches the order of the input sequence. Also see `gatherUnordered`.
    */
-  def gather[A](fs: Seq[F[A]]): F[List[A]] =
-    map(gatherUnordered(fs.toList.zipWithIndex.map { case (f,i) => map(f)((_ ,i)) }))(
-      ais => ais.sortBy(_._2).map(_._1))
+  def gather[A](fs: Seq[F[A]]): F[List[A]] = {
+    val indexed = Indexed2.make(fs)
+
+    map(gatherUnorderedIndexed(indexed)) { results =>
+      val arr = scala.collection.mutable.ArrayBuffer.fill[A](indexed.size)(null.asInstanceOf[A])
+
+      results.foreach { ai =>
+        arr.update(ai.i, ai.a)
+      }
+
+      arr.toList
+    }
+  }
 
   def gather1[A](fs: NonEmptyList[F[A]]): F[NonEmptyList[A]] =
-    map(gatherUnordered1(NonEmptyList(map(fs.head)((_, -1)), fs.tail.zipWithIndex.map { case (f, i) => map(f)((_ ,i)) })))(
-      ais => NonEmptyList.fromList(ais.toList.sortBy(_._2).map(_._1)).get)
+    map(
+      gatherUnordered1(NonEmptyList(map(fs.head)((_, -1)), fs.tail.zipWithIndex.map { case (f, i) => map(f)((_ ,i)) }))
+    )(ais => NonEmptyList.fromList(ais.toList.sortBy(_._2).map(_._1)).get)
 
   /**
    * Nondeterministically sequence `fs`, collecting the results using a `Monoid`.
@@ -180,21 +220,18 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
       case OneAnd(h, t) => t.foldLeft(h)(A.combine)
     }
 
-  def parallel: Applicative[({ type L[x] = Parallel[F, x] })#L] =
+  final def parallel: Applicative[({ type L[x] = Parallel[F, x] })#L] =
     new Applicative[({ type L[x] = Parallel[F, x] })#L] {
-      def pure[A](a: A) = new Parallel(self.pure(a))
-      override def map[A, B](fa: Parallel[F, A])(f: A => B) =
+      final def pure[A](a: A): Parallel[F, A] = new Parallel(self.pure(a))
+      override final def map[A, B](fa: Parallel[F, A])(f: A => B): Parallel[F, B] =
         new Parallel(self.map(fa.underlying)(f))
-      def ap[A, B](fa: Parallel[F, A])(fab: Parallel[F, A => B]) =
+      final def ap[A, B](fa: Parallel[F, A])(fab: Parallel[F, A => B]): Parallel[F, B] =
         new Parallel(self.mapBoth(fa.underlying, fab.underlying)((a, f) => f(a)))
-      def product[A, B](fa: Parallel[F, A], fb: Parallel[F, B]): Parallel[F, (A, B)] = new Parallel(self.both(fa.underlying, fb.underlying))
+      final def product[A, B](fa: Parallel[F, A], fb: Parallel[F, B]): Parallel[F, (A, B)] =
+        new Parallel(self.both(fa.underlying, fb.underlying))
     }
 }
 
 object Nondeterminism {
-  @inline def apply[F[_]](implicit F: Nondeterminism[F]): Nondeterminism[F] = F
-
-  ////
-
-  ////
+  @inline final def apply[F[_]](implicit F: Nondeterminism[F]): Nondeterminism[F] = F
 }
