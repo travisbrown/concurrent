@@ -17,7 +17,7 @@ lazy val compilerOptions = Seq(
   "-Xfuture"
 )
 
-lazy val catsVersion = "0.4.0-SNAPSHOT"
+lazy val catsVersion = "0.4.1"
 
 lazy val scalaTestVersion = "3.0.0-M9"
 lazy val scalaCheckVersion = "1.12.5"
@@ -35,8 +35,8 @@ lazy val baseSettings = Seq(
   libraryDependencies ++= Seq(
     "org.scalacheck" %% "scalacheck" % scalaCheckVersion % "test",
     "org.scalatest" %% "scalatest" % scalaTestVersion % "test",
-    "org.spire-math" %% "cats-core" % catsVersion changing(),
-    "org.spire-math" %% "cats-laws" % catsVersion % "test",
+    "org.typelevel" %% "cats-core" % catsVersion,
+    "org.typelevel" %% "cats-laws" % catsVersion % "test",
     "org.typelevel" %% "discipline" % disciplineVersion
   ),
   resolvers ++= Seq(

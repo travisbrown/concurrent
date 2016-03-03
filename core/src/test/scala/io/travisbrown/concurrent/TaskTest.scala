@@ -3,7 +3,7 @@ package io.travisbrown.concurrent
 import algebra.Eq
 import cats.{ ApplicativeError, Eval, Monad }
 import cats.data.Xor
-import cats.laws.discipline.{ MonadErrorTests, MonoidalTests }
+import cats.laws.discipline.{ CartesianTests, MonadErrorTests }
 import java.util.concurrent.{ Executors, TimeoutException, TimeUnit }
 import java.util.concurrent.atomic._
 import org.scalacheck.{ Arbitrary, Gen }
@@ -19,7 +19,7 @@ class TaskTest extends BaseTest {
   )
 
   checkAll("TaskInt]", MonadErrorTests[Task, Throwable].monadError[Int, Int, Int])
-  checkAll("Task[Int]", MonoidalTests[Task].monoidal[Int, Int, Int])
+  checkAll("Task[Int]", CartesianTests[Task].cartesian[Int, Int, Int])
 
   val N = 10000
   val correct = (0 to N).sum

@@ -1,7 +1,7 @@
 package io.travisbrown.concurrent
 
 import algebra.Eq
-import cats.laws.discipline.{ MonadTests, MonoidalTests }
+import cats.laws.discipline.{ CartesianTests, MonadTests }
 import java.util.concurrent._
 import org.scalacheck.{ Arbitrary, Gen }
 
@@ -14,7 +14,7 @@ class FutureTest extends BaseTest {
   )
 
   checkAll("Future[Int]", MonadTests[Future].monad[Int, Int, Int])
-  checkAll("Future[Int]", MonoidalTests[Future].monoidal[Int, Int, Int])
+  checkAll("Future[Int]", CartesianTests[Future].cartesian[Int, Int, Int])
 
   val non = Nondeterminism[Future]
 

@@ -225,7 +225,7 @@ trait Nondeterminism[F[_]] extends Monad[F] { self =>
       final def pure[A](a: A): Parallel[F, A] = new Parallel(self.pure(a))
       override final def map[A, B](fa: Parallel[F, A])(f: A => B): Parallel[F, B] =
         new Parallel(self.map(fa.underlying)(f))
-      final def ap[A, B](fa: Parallel[F, A])(fab: Parallel[F, A => B]): Parallel[F, B] =
+      final def ap[A, B](fab: Parallel[F, A => B])(fa: Parallel[F, A]): Parallel[F, B] =
         new Parallel(self.mapBoth(fa.underlying, fab.underlying)((a, f) => f(a)))
       final def product[A, B](fa: Parallel[F, A], fb: Parallel[F, B]): Parallel[F, (A, B)] =
         new Parallel(self.both(fa.underlying, fb.underlying))
