@@ -6,7 +6,7 @@ import cats.std.list._
 import cats.syntax.foldable._
 import scala.collection.JavaConverters._
 
-//final class Indexed[A](val a: A, val i: Int)
+final class Indexed[A](val a: A, val i: Int)
 
 final object Indexed2 {
   def apply[F[_], A](fs: Seq[F[A]])(implicit F: Functor[F]): IndexedSeq[F[Indexed[A]]] = {
