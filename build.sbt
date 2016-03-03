@@ -18,7 +18,6 @@ lazy val compilerOptions = Seq(
 )
 
 lazy val catsVersion = "0.4.1"
-
 lazy val scalaTestVersion = "3.0.0-M9"
 lazy val scalaCheckVersion = "1.12.5"
 lazy val disciplineVersion = "0.4"
@@ -55,18 +54,21 @@ lazy val baseSettings = Seq(
 lazy val allSettings = buildSettings ++ baseSettings
 
 lazy val concurrent = project.in(file("."))
+  .settings(moduleName := "root")
   .settings(allSettings)
-  .aggregate(core, benchmark)
-  .dependsOn(core)
+  .aggregate(coreJVM, coreJS)
+  .dependsOn(coreJVM, coreJS)
 
-lazy val core = project
-  .settings(
-    description := "concurrent core",
-    moduleName := "concurrent-core"
-  )
-  .settings(allSettings)
+lazy val core = crossProject.crossType(CrossType.Pure)
+  .settings(moduleName := "concurrent-core")
+  .settings(allSettings: _*)
 
-lazy val benchmark = project
+lazy val coreJVM = core.jvm
+
+lazy val coreJS = core.js
+
+// JVM only
+lazy val benchmark = project.dependsOn(coreJVM)
   .settings(
     description := "concurrent benchmark",
     moduleName := "concurrent-benchmark"
@@ -79,4 +81,4 @@ lazy val benchmark = project
     )
   )
   .enablePlugins(JmhPlugin)
-  .dependsOn(core)
+  .dependsOn(coreJVM)
